@@ -1,3 +1,4 @@
+import argparse
 import json
 import math
 import platform
@@ -14,8 +15,13 @@ import torch
 # Helpers
 # ---------------------------------------------------------------------------
 
-def timed(fn, warmup=2, repeats=5):
-    """Run *fn* with warmup iterations, then return the median time in seconds."""
+DEFAULT_REPEATS = 5
+
+
+def timed(fn, warmup=2, repeats=None):
+    """Run *fn* with warmup iterations, then return (median, mean, std) in seconds."""
+    if repeats is None:
+        repeats = DEFAULT_REPEATS
     for _ in range(warmup):
         fn()
     times = []
@@ -25,7 +31,10 @@ def timed(fn, warmup=2, repeats=5):
         elapsed = time.perf_counter() - start
         times.append(elapsed)
     times.sort()
-    return times[len(times) // 2]
+    median = times[len(times) // 2]
+    mean = sum(times) / len(times)
+    std = (sum((t - mean) ** 2 for t in times) / len(times)) ** 0.5
+    return median, mean, std
 
 
 def gflops_matmul(n, seconds):
@@ -60,7 +69,7 @@ def collect_system_info():
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
         info["gpu"] = props.name
-        info["gpu_vram_gb"] = round(props.total_mem / 1024**3, 2)
+        info["gpu_vram_gb"] = round(props.total_memory / 1024**3, 2)
     return info
 
 
@@ -75,11 +84,13 @@ def cpu_matmul(n=4096):
     def run():
         np.dot(a, b)
 
-    sec = timed(run)
+    median, mean, std = timed(run)
     return {
         "name": f"CPU matrix multiply ({n}x{n})",
-        "time_s": round(sec, 4),
-        "gflops": round(gflops_matmul(n, sec), 2),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
+        "gflops": round(gflops_matmul(n, median), 2),
     }
 
 
@@ -94,11 +105,13 @@ def cpu_single_thread(n_samples=5_000_000):
                 inside += 1
         return 4.0 * inside / n_samples
 
-    sec = timed(run, warmup=1, repeats=3)
+    median, mean, std = timed(run, warmup=1)
     return {
         "name": f"CPU single-thread Monte Carlo pi ({n_samples:,} samples)",
-        "time_s": round(sec, 4),
-        "samples_per_sec": round(n_samples / sec, 0),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
+        "samples_per_sec": round(n_samples / median, 0),
     }
 
 
@@ -110,10 +123,12 @@ def cpu_multi_core():
     def run():
         np.linalg.svd(a, full_matrices=False)
 
-    sec = timed(run, warmup=1, repeats=3)
+    median, mean, std = timed(run, warmup=1)
     return {
         "name": f"CPU SVD ({n}x{n}, multi-core BLAS)",
-        "time_s": round(sec, 4),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
     }
 
 
@@ -129,11 +144,13 @@ def gpu_matmul(n=4096):
         torch.mm(a, b)
         torch.cuda.synchronize()
 
-    sec = timed(run)
+    median, mean, std = timed(run)
     return {
         "name": f"GPU matrix multiply ({n}x{n})",
-        "time_s": round(sec, 4),
-        "gflops": round(gflops_matmul(n, sec), 2),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
+        "gflops": round(gflops_matmul(n, median), 2),
     }
 
 
@@ -145,11 +162,13 @@ def gpu_matmul_large(n=8192):
         torch.mm(a, b)
         torch.cuda.synchronize()
 
-    sec = timed(run)
+    median, mean, std = timed(run)
     return {
         "name": f"GPU matrix multiply ({n}x{n})",
-        "time_s": round(sec, 4),
-        "gflops": round(gflops_matmul(n, sec), 2),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
+        "gflops": round(gflops_matmul(n, median), 2),
     }
 
 
@@ -164,10 +183,12 @@ def gpu_conv2d():
         conv(x)
         torch.cuda.synchronize()
 
-    sec = timed(run)
+    median, mean, std = timed(run)
     return {
         "name": f"GPU Conv2d ({batch}x{channels}x{h}x{w}, k={kernel})",
-        "time_s": round(sec, 4),
+        "time_s": round(median, 4),
+        "time_mean_s": round(mean, 4),
+        "time_std_s": round(std, 4),
     }
 
 
@@ -182,8 +203,8 @@ def gpu_memory_bandwidth():
         d = host_tensor.to("cuda", non_blocking=False)
         torch.cuda.synchronize()
 
-    h2d_sec = timed(h2d)
-    h2d_gbps = size_mb / 1024 / h2d_sec
+    h2d_median, h2d_mean, h2d_std = timed(h2d)
+    h2d_gbps = size_mb / 1024 / h2d_median
 
     # Device → Host
     device_tensor = host_tensor.to("cuda")
@@ -193,14 +214,18 @@ def gpu_memory_bandwidth():
         _ = device_tensor.to("cpu", non_blocking=False)
         torch.cuda.synchronize()
 
-    d2h_sec = timed(d2h)
-    d2h_gbps = size_mb / 1024 / d2h_sec
+    d2h_median, d2h_mean, d2h_std = timed(d2h)
+    d2h_gbps = size_mb / 1024 / d2h_median
 
     return {
         "name": f"GPU memory transfer ({size_mb} MB)",
-        "h2d_time_s": round(h2d_sec, 4),
+        "h2d_time_s": round(h2d_median, 4),
+        "h2d_time_mean_s": round(h2d_mean, 4),
+        "h2d_time_std_s": round(h2d_std, 4),
         "h2d_gbps": round(h2d_gbps, 2),
-        "d2h_time_s": round(d2h_sec, 4),
+        "d2h_time_s": round(d2h_median, 4),
+        "d2h_time_mean_s": round(d2h_mean, 4),
+        "d2h_time_std_s": round(d2h_std, 4),
         "d2h_gbps": round(d2h_gbps, 2),
     }
 
@@ -236,7 +261,7 @@ def run_benchmarks():
         print(f"  Running {bench_fn.__name__}...", end=" ", flush=True)
         r = bench_fn()
         results.append(r)
-        summary = f"{r['time_s']}s"
+        summary = f"{r['time_s']}s (mean={r['time_mean_s']}s, std={r['time_std_s']}s)"
         if "gflops" in r:
             summary += f"  ({r['gflops']} GFLOPS)"
         if "samples_per_sec" in r:
@@ -254,11 +279,13 @@ def run_benchmarks():
             print(f"  Running {bench_fn.__name__}...", end=" ", flush=True)
             r = bench_fn()
             results.append(r)
-            summary = f"{r['time_s']}s" if "time_s" in r else ""
-            if "gflops" in r:
-                summary += f"  ({r['gflops']} GFLOPS)"
             if "h2d_gbps" in r:
-                summary = f"H2D {r['h2d_gbps']} GB/s  D2H {r['d2h_gbps']} GB/s"
+                summary = (f"H2D {r['h2d_gbps']} GB/s (mean={r['h2d_time_mean_s']}s, std={r['h2d_time_std_s']}s)  "
+                           f"D2H {r['d2h_gbps']} GB/s (mean={r['d2h_time_mean_s']}s, std={r['d2h_time_std_s']}s)")
+            else:
+                summary = f"{r['time_s']}s (mean={r['time_mean_s']}s, std={r['time_std_s']}s)"
+                if "gflops" in r:
+                    summary += f"  ({r['gflops']} GFLOPS)"
             print(summary)
     else:
         print("\n  [GPU benchmarks skipped — no CUDA device available]")
@@ -282,6 +309,14 @@ def run_benchmarks():
 
 
 def main():
+    global DEFAULT_REPEATS
+    parser = argparse.ArgumentParser(description="GPU + CPU Benchmark")
+    parser.add_argument(
+        "--repeats", type=int, default=DEFAULT_REPEATS,
+        help=f"Number of timed repeats per benchmark (default: {DEFAULT_REPEATS})",
+    )
+    args = parser.parse_args()
+    DEFAULT_REPEATS = args.repeats
     run_benchmarks()
 
 

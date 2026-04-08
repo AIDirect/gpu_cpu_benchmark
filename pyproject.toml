@@ -1,0 +1,12 @@
+[project]
+name = "gpu-benchmark"
+version = "0.1.0"
+description = "Benchmark script to measure GPU and CPU performance across environments"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "numpy",
+]
+
+[project.scripts]
+benchmark = "benchmark:main"

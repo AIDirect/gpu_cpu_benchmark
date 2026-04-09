@@ -56,13 +56,13 @@ uv sync --extra cpu
 
 ```bash
 # Run with defaults (5 repeats per benchmark)
-uv run benchmark
+uv run benchmark.py
 
 # More repeats for higher accuracy
-uv run benchmark --repeats 10
+uv run benchmark.py --repeats 10
 
 # Quick run
-uv run benchmark --repeats 2
+uv run benchmark.py --repeats 2
 ```
 
 Results are printed to the console and saved as a timestamped JSON file (e.g., `benchmark_results_hostname_20260408T120000Z.json`).
